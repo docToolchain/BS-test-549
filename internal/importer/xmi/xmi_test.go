@@ -343,7 +343,12 @@ func TestImport_XXEDoctype(t *testing.T) {
 
 // TestImport_BigData runs against a real Enterprise Architect XMI export
 // (AUTOSAR model, windows-1252 encoding, ~114 MB, depth >20).
-// The fixture is gitignored due to its size; the test is skipped in CI when absent.
+// The fixture is gitignored (not committed, not Git-LFS-tracked, see #553) —
+// fetch it with `make fetch-testdata` (scripts/fetch-xmi-testdata.sh), which
+// pulls it from the separate docToolchain/Bausteinsicht-Testdata repo. This
+// test skips itself when the fixture is absent or too small (offline/local
+// dev without having fetched it); the xmi-bigdata-integration CI job in
+// go.yml fetches it explicitly and fails if the test unexpectedly skips.
 func TestImport_BigData(t *testing.T) {
 	const minSize = 1 * 1024 * 1024 // 1 MB — stub is only a few hundred bytes
 	path := td("BigData.xmi")
@@ -367,7 +372,54 @@ func TestImport_BigData(t *testing.T) {
 	if len(r.Model.Specification.Elements) == 0 {
 		t.Error("expected non-empty specification")
 	}
+	if len(r.Model.Relationships) == 0 {
+		t.Error("expected non-empty relationships")
+	}
 	t.Logf("BigData: %d top-level elements, %d relationships, %d spec kinds, %d warnings",
+		len(r.Model.Model), len(r.Model.Relationships),
+		len(r.Model.Specification.Elements), len(r.Warnings))
+}
+
+// TestImport_SyntheticBigData exercises the importer at the same rough scale
+// as TestImport_BigData's real export (windows-1252 encoding, nesting depth
+// ~23, tens of thousands of elements), but via a generated fixture — so
+// every CI job gets scale/depth coverage unconditionally, without depending
+// on the real fixture having been fetched (#553). Complements, not replaces,
+// TestImport_BigData: this one is always-on/synthetic for baseline coverage
+// everywhere; that one is real-file/high-fidelity, but only in the dedicated
+// xmi-bigdata-integration CI job that fetches it.
+func TestImport_SyntheticBigData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "synthetic_bigdata.xmi")
+	f, err := os.Create(path) // #nosec G304 -- path is our own t.TempDir() file
+	if err != nil {
+		t.Fatalf("create synthetic fixture: %v", err)
+	}
+	defer f.Close() //nolint:errcheck // in addition to the explicit Close below, so t.Fatalf (Goexit) can't skip it
+
+	if err := writeSyntheticXMI(f, 20000, 23, 12); err != nil {
+		t.Fatalf("generate synthetic fixture: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close synthetic fixture: %v", err)
+	}
+	if fi, err := os.Stat(path); err == nil {
+		t.Logf("synthetic fixture size: %d bytes", fi.Size())
+	}
+
+	r, err := xmi.Import(path, nil)
+	if err != nil {
+		t.Fatalf("Import failed: %v", err)
+	}
+	if len(r.Model.Model) == 0 {
+		t.Error("expected non-empty model")
+	}
+	if len(r.Model.Specification.Elements) == 0 {
+		t.Error("expected non-empty specification")
+	}
+	if len(r.Model.Relationships) == 0 {
+		t.Error("expected non-empty relationships")
+	}
+	t.Logf("synthetic BigData: %d top-level elements, %d relationships, %d spec kinds, %d warnings",
 		len(r.Model.Model), len(r.Model.Relationships),
 		len(r.Model.Specification.Elements), len(r.Warnings))
 }
