@@ -1,0 +1,100 @@
+name: SonarCloud Analysis (fork PRs)
+
+# Runs the SonarCloud scan for pull requests opened from forks. A fork PR's own
+# (untrusted) "SonarCloud Analysis" run cannot access SONAR_TOKEN, so it only
+# stages the scan inputs as an artifact. This workflow is triggered by
+# workflow_run and therefore executes in the BASE repository context with access
+# to secrets. It never runs untrusted code: it checks out the PR's sources only
+# for static analysis and reuses the coverage report produced by the fork run.
+# See docToolchain/Bausteinsicht#549.
+#
+# NOTE: workflow_run always uses the version of this file on the default branch,
+# so changes here only take effect after they are merged to main.
+
+on:
+  workflow_run:
+    workflows: ["SonarCloud Analysis"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  sonarcloud-fork:
+    runs-on: ubuntu-latest
+    name: SonarCloud Analysis (fork PRs)
+    # Only for successful fork PR runs; same-repo PRs and pushes are already
+    # scanned inline by the "SonarCloud Analysis" workflow.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
+
+    steps:
+      # Download to runner.temp (outside the workspace) so it survives the
+      # checkout below, which cleans GITHUB_WORKSPACE.
+      - name: Download staged SonarCloud inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: sonar-inputs
+          path: ${{ runner.temp }}/sonar-inputs
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Parse and validate PR metadata
+        id: meta
+        run: |
+          f="${{ runner.temp }}/sonar-inputs/pr-meta.env"
+          # cut -f2- captures values literally; their content is never evaluated.
+          get() { grep "^$1=" "$f" | head -n1 | cut -d= -f2-; }
+          pr_number="$(get pr_number)"
+          head_repo="$(get head_repo)"
+          head_ref="$(get head_ref)"
+          head_sha="$(get head_sha)"
+          base_ref="$(get base_ref)"
+          # Validate everything that is later interpolated into YAML/args.
+          case "$pr_number" in ''|*[!0-9]*) echo "invalid pr_number"; exit 1;; esac
+          case "$head_sha"  in ''|*[!0-9a-f]*) echo "invalid head_sha"; exit 1;; esac
+          case "$head_repo" in ''|*[!A-Za-z0-9._/-]*) echo "invalid head_repo"; exit 1;; esac
+          case "$base_ref"  in ''|*[!A-Za-z0-9._/-]*) echo "invalid base_ref"; exit 1;; esac
+          {
+            printf 'pr_number=%s\n' "$pr_number"
+            printf 'head_repo=%s\n' "$head_repo"
+            printf 'head_sha=%s\n'  "$head_sha"
+            printf 'base_ref=%s\n'  "$base_ref"
+          } >> "$GITHUB_OUTPUT"
+          # head_ref may contain characters unsafe for GITHUB_OUTPUT / action
+          # args; keep it in a file and inject it via the properties file only.
+          printf '%s' "$head_ref" > "${{ runner.temp }}/head_ref.txt"
+
+      - name: Checkout PR head (sources only, never executed)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          repository: ${{ steps.meta.outputs.head_repo }}
+          ref: ${{ steps.meta.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Restore staged coverage report
+        run: cp "${{ runner.temp }}/sonar-inputs/coverage.out" coverage.out
+
+      - name: Inject pull request analysis parameters
+        env:
+          PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          BASE_REF: ${{ steps.meta.outputs.base_ref }}
+        run: |
+          head_ref="$(cat "${{ runner.temp }}/head_ref.txt")"
+          {
+            printf '\n# --- injected for fork PR analysis (workflow_run) ---\n'
+            printf 'sonar.scm.revision=%s\n'        "$HEAD_SHA"
+            printf 'sonar.pullrequest.key=%s\n'     "$PR_NUMBER"
+            printf 'sonar.pullrequest.branch=%s\n'  "$head_ref"
+            printf 'sonar.pullrequest.base=%s\n'    "$BASE_REF"
+          } >> sonar-project.properties
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
