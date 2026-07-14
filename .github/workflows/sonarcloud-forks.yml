@@ -94,6 +94,18 @@ jobs:
             printf 'sonar.pullrequest.base=%s\n'    "$BASE_REF"
           } >> sonar-project.properties
 
+      # TEST-ONLY (BS-test-549): proves the workflow_run handoff delivered the
+      # secret across the fork boundary. Not part of the real #549 change.
+      - name: Assert SONAR_TOKEN reached the trusted context
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "SONAR_TOKEN present in trusted workflow_run context (len=${#SONAR_TOKEN})"
+          else
+            echo "SONAR_TOKEN is EMPTY -- handoff failed"; exit 1
+          fi
+
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master
         env:
