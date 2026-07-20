@@ -1,1 +1,1 @@
-fork PR trigger test for #549
+verify #566 fork-PR lookup fix (run bfbd73f-retrigger)
